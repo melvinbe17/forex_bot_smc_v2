@@ -1,0 +1,34 @@
+# Results / generated outputs (regenerable)
+results/
+
+# Market data (re-downloadable from Dukascopy, too large for git)
+data/
+
+# Old manual backups (we use git now)
+backups/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env / secrets
+.env
+*.log

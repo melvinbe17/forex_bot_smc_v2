@@ -406,7 +406,7 @@ if __name__ == "__main__":
     ltf_snap = analyze(ltf_df)
 
     print("Setup-Finder ...")
-    setups = find_all_setups(ltf_df, ltf_snap, htf_snap, htf_df=htf_df)
+    setups = find_all_setups(ltf_df, ltf_snap, htf_snap, htf_df=htf_df, symbol=args.symbol)
     print(f"  -> {len(setups)} Setups")
 
     print("Simuliere ...")

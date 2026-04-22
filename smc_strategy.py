@@ -71,9 +71,11 @@ MIN_WARMUP_BARS = 50        # warten bis genug Swings/Zonen vorhanden
 # ---------------------------------------------------------------------------
 # Session-Filter
 # ---------------------------------------------------------------------------
-def _session_ok(ts: pd.Timestamp) -> bool:
+def _session_ok(ts: pd.Timestamp, symbol: Optional[str] = None) -> bool:
     """True wenn der Bar-Timestamp in einer erlaubten Killzone liegt.
     Benutzt config.py (SESSION_FILTER_ENABLED / KILLZONES / SKIP_*).
+    Wenn symbol gesetzt, werden zusaetzlich die Per-Symbol-Dead-Zone-Blacklists
+    geprueft (SESSION_HOUR_BLACKLIST_PER_SYMBOL / SESSION_WEEKDAY_BLACKLIST_PER_SYMBOL).
     Wenn config fehlt oder Filter aus -> immer True.
     """
     if _cfg is None or not getattr(_cfg, "SESSION_FILTER_ENABLED", False):
@@ -89,6 +91,15 @@ def _session_ok(ts: pd.Timestamp) -> bool:
     skip_fri_after = getattr(_cfg, "SESSION_SKIP_FRIDAY_AFTER_UTC", None)
     if wd == 4 and skip_fri_after is not None and ts.hour >= skip_fri_after:
         return False
+
+    # Per-Symbol Dead-Zone Blacklists (datenbasiert, Stand 22.04.2026)
+    if symbol is not None:
+        hour_bl = getattr(_cfg, "SESSION_HOUR_BLACKLIST_PER_SYMBOL", {}).get(symbol, [])
+        if ts.hour in hour_bl:
+            return False
+        wd_bl = getattr(_cfg, "SESSION_WEEKDAY_BLACKLIST_PER_SYMBOL", {}).get(symbol, [])
+        if wd in wd_bl:
+            return False
 
     kz = getattr(_cfg, "SESSION_KILLZONES_UTC", None)
     if not kz:
@@ -256,8 +267,11 @@ def find_setup(
     ltf_snap,
     htf_events,
     current_idx: int,
+    symbol: Optional[str] = None,
 ) -> Optional[Setup]:
-    """Prueft ob am LTF-Bar mit Index current_idx ein Setup vorliegt."""
+    """Prueft ob am LTF-Bar mit Index current_idx ein Setup vorliegt.
+    symbol (optional) aktiviert Per-Symbol-Dead-Zone-Blacklists im Session-Filter.
+    """
     if current_idx < MIN_WARMUP_BARS:
         return None
 
@@ -265,7 +279,7 @@ def find_setup(
     bar_time = ltf_df.index[current_idx]
 
     # Session-Filter vor allem anderen - spart die teuren OB/FVG-Scans.
-    if not _session_ok(bar_time):
+    if not _session_ok(bar_time, symbol):
         return None
 
     bias = htf_bias_at(htf_events, bar_time)
@@ -395,6 +409,7 @@ def find_all_setups(
     ltf_snap,
     htf_snap,
     htf_df: Optional[pd.DataFrame] = None,
+    symbol: Optional[str] = None,
 ) -> List[Setup]:
     """Iteriert Bar fuer Bar und sammelt Setups.
     WARNUNG: auf 185k Bars kann das einige Minuten dauern (Python-Schleife
@@ -403,6 +418,9 @@ def find_all_setups(
     htf_df (optional) wird fuer den VOLA_REGIME_FILTER gebraucht. Wenn None
     oder Filter deaktiviert, wird nicht gefiltert. Backtester und Live-Runner
     sollten htf_df immer mitliefern.
+
+    symbol (optional) wird an find_setup weitergereicht und aktiviert dort die
+    Per-Symbol-Dead-Zone-Blacklists im Session-Filter.
     """
     setups: List[Setup] = []
     htf_events = htf_snap.events
@@ -452,7 +470,7 @@ def find_all_setups(
         # D1-Bias-Gate: neutral (Warmup) -> kein Trade
         if d1_bias is not None and d1_bias[i] == "neutral":
             continue
-        s = find_setup(ltf_df, ltf_snap, htf_events, i)
+        s = find_setup(ltf_df, ltf_snap, htf_events, i, symbol=symbol)
         if s is None:
             continue
         # Direction muss zum D1-Regime passen
@@ -518,7 +536,7 @@ if __name__ == "__main__":
     ltf_snap = analyze(ltf_df)
 
     print("Suche Setups ...")
-    setups = find_all_setups(ltf_df, ltf_snap, htf_snap, htf_df=htf_df)
+    setups = find_all_setups(ltf_df, ltf_snap, htf_snap, htf_df=htf_df, symbol=args.symbol)
 
     longs = sum(1 for s in setups if s.direction == "long")
     shorts = len(setups) - longs

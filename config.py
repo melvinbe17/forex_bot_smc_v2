@@ -196,6 +196,28 @@ SESSION_KILLZONES_UTC = [
 SESSION_SKIP_WEEKDAYS: list[int] = [5, 6]   # Sa, So komplett skippen
 SESSION_SKIP_FRIDAY_AFTER_UTC = 20          # Fr ab 20:00 UTC kein Entry
 
+# ---------------------------------------------------------------------------
+# Per-Symbol Dead-Zone Blacklists (datenbasiert, Stand 22.04.2026)
+# Quelle: session_net_view.py + session_stability.py (Jahr-für-Jahr Stabilitätscheck)
+# ---------------------------------------------------------------------------
+
+# Hours (UTC) die pro Symbol systematisch Geld verlieren
+# Format: {"SYMBOL": [hour1, hour2, ...]}
+SESSION_HOUR_BLACKLIST_PER_SYMBOL: dict[str, list[int]] = {
+    "EURUSD": [13],   # 5/5 volle Jahre negativ, -3.87R gesamt, PF 0.75
+}
+
+# Weekdays die pro Symbol systematisch Geld verlieren (0=Mo, 1=Di, 2=Mi, 3=Do, 4=Fr)
+SESSION_WEEKDAY_BLACKLIST_PER_SYMBOL: dict[str, list[int]] = {
+    "USDJPY": [4],    # Fr: 4/5 volle Jahre neg, -10.26R gesamt, WR 30.59%, größter Single-Impact
+}
+
+# WATCHLIST (nicht gefiltert, aber beobachten):
+# - USDJPY hour=9: Regime-Shift seit 2023 (+13.9R in 2021-22, -14.2R in 2023-26)
+#   -> Im Oktober 2026 re-evaluieren. Wenn dann immer noch negativ, filtern.
+# - XAUUSD hour=14: Verluste fast ausschließlich aus 2023 (-3.15R von -4.26R gesamt)
+#   -> Instabil, nicht filtern. Bei neuem Backtest-Run prüfen.
+
 # ----------------------------------------------------------------------
 # COUNTER-TREND ADX FILTER  (H4-Context-Filter, Phase 5)
 # ----------------------------------------------------------------------

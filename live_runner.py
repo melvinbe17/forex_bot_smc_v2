@@ -24,7 +24,8 @@ Parität zum Backtest
 Sicherheit
 ----------
 - Default ist DRY-RUN: es werden KEINE Orders geschickt, nur geloggt.
-- Echte Orders erst mit --live (und erst wenn M3/executor.py verdrahtet ist).
+- Mit --live: Executor (M3) + FTMO-Guard (M4) aktiv -> echte Orders, jeder
+  Zyklus managed offene Positionen und prueft die FTMO-Limits (Kill-Switch).
 
 Aufruf (auf dem VPS)
 --------------------
@@ -46,6 +47,8 @@ from smc_patterns import analyze
 from smc_strategy import find_all_setups, Setup
 
 import live_feed
+import executor
+import ftmo_guard
 
 log = logging.getLogger("live_runner")
 
@@ -151,11 +154,29 @@ def _log_signal(prefix: str, broker: str, s: Setup, dry_run: bool) -> None:
 def run_cycle(
     prefixes: List[str],
     n_bars: int,
-    dry_run: bool,
+    live: bool,
     last_signaled: dict,
-    on_signal: Optional[Callable[[str, str, Setup], None]] = None,
 ) -> int:
-    """Ein Detektionszyklus ueber alle Symbole. Gibt Anzahl neuer Signale zurueck."""
+    """Ein Zyklus. dry (live=False): nur Signale loggen. live=True: zusaetzlich
+    offene Positionen managen, FTMO-Guard durchsetzen und Entries ausfuehren.
+    Gibt Anzahl neuer Signale zurueck."""
+
+    halted = False
+    if live:
+        # 1) Bestehende Positionen managen (TP1/TP2/BE/Max-Hold)
+        try:
+            executor.manage_open_positions()
+        except Exception as e:                       # noqa: BLE001
+            log.error("manage_open_positions-Fehler: %s", e)
+        # 2) Kill-Switch: bei Limit-Verletzung flatten + keine neuen Entries
+        try:
+            halted = ftmo_guard.enforce()
+        except Exception as e:                       # noqa: BLE001
+            log.error("ftmo_guard.enforce-Fehler: %s", e)
+        if halted:
+            log.warning("FTMO-Guard HALT aktiv -> keine neuen Entries diesen Zyklus")
+
+    # 3) Signale erkennen (+ ggf. ausfuehren)
     n_new = 0
     for prefix in prefixes:
         try:
@@ -174,13 +195,22 @@ def run_cycle(
         last_signaled[prefix] = last_ts
 
         for s in fresh:
-            _log_signal(prefix, broker, s, dry_run)
+            _log_signal(prefix, broker, s, dry_run=not live)
             n_new += 1
-            if on_signal is not None and not dry_run:
-                try:
-                    on_signal(prefix, broker, s)        # -> M3 executor.open_from_setup
-                except Exception as e:                  # noqa: BLE001
-                    log.error("on_signal-Fehler %s: %s", prefix, e)
+            if not live or halted:
+                continue
+            # FTMO-Guard-Gate vor jedem Entry
+            ok, reason = ftmo_guard.can_open()
+            if not ok:
+                log.warning("Entry %s blockiert vom Guard: %s", prefix, reason)
+                continue
+            if executor.has_open_position(prefix):
+                log.info("%s: bereits offene Position -> kein Entry", prefix)
+                continue
+            try:
+                executor.open_from_setup(prefix, broker, s, dry=False)
+            except Exception as e:                   # noqa: BLE001
+                log.error("Entry %s fehlgeschlagen: %s", prefix, e)
     return n_new
 
 
@@ -190,20 +220,19 @@ def run_cycle(
 def run_loop(
     prefixes: List[str],
     n_bars: int,
-    dry_run: bool,
+    live: bool,
     buffer_s: int = 10,
-    on_signal: Optional[Callable[[str, str, Setup], None]] = None,
 ) -> None:
     last_signaled: dict = {}
-    log.info("Live-Loop gestartet | Symbole=%s | Fenster=%d Bars | %s",
-             prefixes, n_bars, "DRY-RUN" if dry_run else "LIVE-ORDERS")
+    log.info("Live-Loop gestartet | Symbole=%s | Fenster=%d Bars | Modus=%s",
+             prefixes, n_bars, "LIVE-ORDERS" if live else "DRY-RUN")
     try:
         while True:
             wait = seconds_until_next_m15(buffer_s)
             log.info("Warte %.0fs bis zum naechsten M15-Close ...", wait)
             time.sleep(wait)
             t0 = time.time()
-            n = run_cycle(prefixes, n_bars, dry_run, last_signaled, on_signal)
+            n = run_cycle(prefixes, n_bars, live, last_signaled)
             log.info("Zyklus fertig in %.1fs | neue Signale: %d", time.time() - t0, n)
     except KeyboardInterrupt:
         log.info("Abbruch per Ctrl-C - beende sauber.")
@@ -225,7 +254,7 @@ def main() -> int:
                     help="Nur EIN Detektionszyklus jetzt (zum Testen).")
     ap.add_argument("--live", action="store_true",
                     help="ECHTE Orders schicken (Default: Dry-Run, nur loggen). "
-                         "Wirkt erst wenn M3/executor.py verdrahtet ist.")
+                         "Aktiviert Executor + FTMO-Guard + Positions-Management.")
     ap.add_argument("--buffer", type=int, default=10,
                     help="Sekunden Puffer nach M15-Close (Default 10).")
     args = ap.parse_args()
@@ -236,25 +265,21 @@ def main() -> int:
     )
 
     prefixes = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    dry_run = not args.live
+    live = args.live
 
-    on_signal = None
-    if args.live:
-        # M3: hier wird spaeter der Executor eingehaengt:
-        #   from executor import open_from_setup as on_signal
-        log.warning("--live gesetzt, aber executor.py (M3) ist noch nicht "
-                    "verdrahtet -> es werden KEINE Orders geschickt.")
-        dry_run = True
+    if live:
+        log.warning("LIVE-MODUS: es werden ECHTE Orders auf dem Konto geschickt "
+                    "(Executor + FTMO-Guard aktiv).")
 
     if args.once:
         last_signaled: dict = {}
-        n = run_cycle(prefixes, args.window, dry_run, last_signaled, on_signal)
+        n = run_cycle(prefixes, args.window, live, last_signaled)
         log.info("Einmaliger Zyklus fertig | neue Signale: %d", n)
         if live_feed.mt5 is not None:
             live_feed.mt5.shutdown()
         return 0
 
-    run_loop(prefixes, args.window, dry_run, buffer_s=args.buffer, on_signal=on_signal)
+    run_loop(prefixes, args.window, live, buffer_s=args.buffer)
     return 0
 
 

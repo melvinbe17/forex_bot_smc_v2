@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -91,8 +91,10 @@ def _server_now() -> datetime:
         if name:
             t = mt5.symbol_info_tick(name)
             if t and t.time:
-                return datetime.utcfromtimestamp(t.time)   # Server-Zeit als naive
-    return datetime.utcnow()
+                # t.time ist Server-Zeit-als-Epoch -> tz-aware UTC gibt dieselbe
+                # Server-Wand-Uhr; .date() liefert den Server-Handelstag.
+                return datetime.fromtimestamp(t.time, tz=timezone.utc)
+    return datetime.now(timezone.utc)
 
 
 def _server_day() -> str:

@@ -49,8 +49,56 @@ from smc_strategy import find_all_setups, Setup
 import live_feed
 import executor
 import ftmo_guard
+import heartbeat
 
 log = logging.getLogger("live_runner")
+
+
+def _write_heartbeat(n_new: int, live: bool) -> None:
+    """Schreibt Status + Lebenszeichen in heartbeat.json. Laeuft im Runner-
+    Prozess (der die MT5-Verbindung hat); daily_summary/watchdog lesen nur
+    die Datei, ohne eigene MT5-Verbindung. Fehler werden geloggt, nie geworfen."""
+    try:
+        acc = live_feed.mt5.account_info()
+        snap = ftmo_guard.snapshot()
+        allp = live_feed.mt5.positions_get() or []
+        ours = [p for p in allp if p.magic == executor.MAGIC]
+        positions = [{
+            "symbol": p.symbol,
+            "side": "long" if p.type == live_feed.mt5.POSITION_TYPE_BUY else "short",
+            "vol": p.volume, "sl": p.sl, "profit": round(p.profit, 2),
+        } for p in ours]
+        realized = None
+        try:
+            now = ftmo_guard._server_now().replace(tzinfo=None)
+            ds = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            deals = live_feed.mt5.history_deals_get(ds, now + timedelta(hours=1)) or []
+            closed = [d for d in deals
+                      if d.magic == executor.MAGIC
+                      and d.entry == live_feed.mt5.DEAL_ENTRY_OUT]
+            realized = {"count": len(closed),
+                        "profit": round(sum(d.profit for d in closed), 2)}
+        except Exception:                            # noqa: BLE001
+            pass
+        heartbeat.write({
+            "mode": "live" if live else "dry",
+            "balance": round(acc.balance, 2) if acc else None,
+            "equity": round(snap["equity"], 2),
+            "server_day": snap["server_day"],
+            "daily_loss": round(snap["daily_loss"], 2),
+            "daily_trip": snap["daily_trip"],
+            "total_loss": round(snap["total_loss"], 2),
+            "total_trip": snap["total_trip"],
+            "losses_today": snap["losses_today"],
+            "max_losses": snap["max_losses"],
+            "halted": snap["halted"],
+            "halt_reason": snap["halt_reason"],
+            "open_positions": positions,
+            "last_signals": n_new,
+            "realized_today": realized,
+        })
+    except Exception as e:                           # noqa: BLE001
+        log.error("Heartbeat schreiben fehlgeschlagen: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +259,8 @@ def run_cycle(
                 executor.open_from_setup(prefix, broker, s, dry=False)
             except Exception as e:                   # noqa: BLE001
                 log.error("Entry %s fehlgeschlagen: %s", prefix, e)
+
+    _write_heartbeat(n_new, live)
     return n_new
 
 
@@ -226,6 +276,7 @@ def run_loop(
     last_signaled: dict = {}
     log.info("Live-Loop gestartet | Symbole=%s | Fenster=%d Bars | Modus=%s",
              prefixes, n_bars, "LIVE-ORDERS" if live else "DRY-RUN")
+    _write_heartbeat(0, live)        # initiales Lebenszeichen direkt beim Start
     try:
         while True:
             wait = seconds_until_next_m15(buffer_s)

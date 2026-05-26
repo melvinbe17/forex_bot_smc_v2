@@ -2,82 +2,84 @@
 daily_summary.py  (forex_bot_smc - Phase 6 / Monitoring)
 ========================================================
 
-Sammelt einen Tagesstatus und schickt ihn per E-Mail (notify):
-  - Balance / Equity
-  - FTMO-Guard: Tages-/Gesamtverlust gegen die Trip-Schwellen, Halt-Status
-  - Offene Positionen (unsere, per MAGIC)
-  - Heute geschlossene Trades + realisierter P/L
+Schickt einen Tagesstatus per E-Mail. Liest dafuer NUR die heartbeat.json
+(die der Live-Runner schreibt) - KEINE eigene MT5-Verbindung. Dadurch kein
+Konflikt um die eine MT5-Python-Verbindung mit dem laufenden Bot.
+
+Ist der Heartbeat zu alt (Bot haengt/aus), wird das oben fett gewarnt.
 
 Gedacht als geplante Windows-Aufgabe (Task Scheduler), z.B. 1x abends.
-Laeuft unabhaengig vom Live-Runner (eigene MT5-Verbindung, danach shutdown).
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
-try:
-    import MetaTrader5 as mt5
-except ImportError:
-    mt5 = None
-
-import live_feed
-import ftmo_guard
+import heartbeat
 import notify
-from executor import MAGIC
 
 log = logging.getLogger("daily_summary")
 
+STALE_AFTER_MIN = 30.0
 
-def build_summary() -> str:
-    acc = mt5.account_info()
-    snap = ftmo_guard.snapshot()
 
-    lines = [
-        f"Balance        : ${acc.balance:.2f}",
-        f"Equity         : ${acc.equity:.2f}",
-        f"Server-Tag      : {snap['server_day']}",
-        f"Tagesverlust   : ${snap['daily_loss']:.2f}  "
-        f"(Trip ${snap['daily_trip']:.0f} / hart ${snap['daily_hard']:.0f})",
-        f"Gesamtverlust  : ${snap['total_loss']:.2f}  "
-        f"(Trip ${snap['total_trip']:.0f} / hart ${snap['total_hard']:.0f})",
-        f"Verluste heute : {snap['losses_today']} / {snap['max_losses']}",
-        f"Guard HALTED   : {snap['halted']}  {snap['halt_reason']}",
+def _f(v) -> str:
+    try:
+        return f"{float(v):.0f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def build_summary() -> tuple[str, bool]:
+    """Gibt (text, stale) zurueck."""
+    d = heartbeat.read()
+    if d is None:
+        return ("Kein Heartbeat gefunden (heartbeat.json fehlt).\n"
+                "Laeuft der Bot? Wurde er seit dem Heartbeat-Update neu gestartet?"), True
+
+    age = heartbeat.age_seconds()
+    stale = heartbeat.is_stale(STALE_AFTER_MIN)
+    age_txt = f"{age/60:.0f} Min" if age is not None else "?"
+
+    lines: list[str] = []
+    if stale:
+        lines += [f"!!! WARNUNG: Letztes Lebenszeichen vor {age_txt} - "
+                  f"der Bot HAENGT oder LAEUFT NICHT !!!", ""]
+
+    lines += [
+        f"Letztes Lebenszeichen: vor {age_txt}  (ts {d.get('ts_utc')})",
+        f"Modus          : {d.get('mode')}",
+        f"Balance        : ${d.get('balance')}",
+        f"Equity         : ${d.get('equity')}",
+        f"Server-Tag      : {d.get('server_day')}",
+        f"Tagesverlust   : ${d.get('daily_loss')}  (Trip ${_f(d.get('daily_trip'))})",
+        f"Gesamtverlust  : ${d.get('total_loss')}  (Trip ${_f(d.get('total_trip'))})",
+        f"Verluste heute : {d.get('losses_today')} / {d.get('max_losses')}",
+        f"Guard HALTED   : {d.get('halted')}  {d.get('halt_reason') or ''}",
         "",
     ]
 
-    # Offene Positionen (unsere)
-    allp = mt5.positions_get() or []
-    ours = [p for p in allp if p.magic == MAGIC]
-    lines.append(f"Offene Positionen ({len(ours)}):")
-    if not ours:
+    pos = d.get("open_positions") or []
+    lines.append(f"Offene Positionen ({len(pos)}):")
+    if not pos:
         lines.append("  (keine)")
-    for p in ours:
-        side = "long" if p.type == mt5.POSITION_TYPE_BUY else "short"
-        lines.append(f"  {p.symbol} {side} vol={p.volume} open={p.price_open} "
-                     f"SL={p.sl} P/L=${p.profit:.2f}")
+    for p in pos:
+        lines.append(f"  {p.get('symbol')} {p.get('side')} vol={p.get('vol')} "
+                     f"SL={p.get('sl')} P/L=${p.get('profit')}")
 
-    # Heute geschlossene Trades
-    try:
-        now = ftmo_guard._server_now().replace(tzinfo=None)
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        deals = mt5.history_deals_get(day_start, now + timedelta(hours=1)) or []
-        closed = [d for d in deals
-                  if d.magic == MAGIC and d.entry == mt5.DEAL_ENTRY_OUT]
-        realized = sum(d.profit for d in closed)
-        lines += ["", f"Geschlossene Trades heute: {len(closed)}  "
-                      f"realisiert ${realized:.2f}"]
-    except Exception as e:                           # noqa: BLE001
-        lines += ["", f"(Deals heute nicht lesbar: {e})"]
+    r = d.get("realized_today")
+    if r:
+        lines += ["", f"Geschlossene Trades heute: {r.get('count')}  "
+                      f"realisiert ${r.get('profit')}"]
 
-    return "\n".join(lines)
+    return "\n".join(lines), stale
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s | %(message)s")
-    live_feed.ensure_initialized()
-    body = build_summary()
+    body, stale = build_summary()
     print(body)
-    notify.send(f"Tages-Status {datetime.now().date()}", body)
-    mt5.shutdown()
+    subject = ("WARNUNG Bot haengt? - " if stale else "") + \
+              f"Tages-Status {datetime.now().date()}"
+    notify.send(subject, body)

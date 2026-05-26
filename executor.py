@@ -242,9 +242,22 @@ def open_from_setup(prefix: str, broker: str, setup, dry: bool = True
                   getattr(result, "comment", mt5.last_error()))
         return None
 
+    # Echten Fuellkurs + Positions-Ticket aus der offenen Position holen.
+    # result.price ist bei manchen Brokern 0 -> price_open der Position ist
+    # verlaesslich (wichtig fuer das spaetere Break-Even-Verschieben).
+    ticket = int(result.order)
+    fill_price = float(getattr(result, "price", 0.0) or 0.0)
+    mine = [p for p in (mt5.positions_get(symbol=broker) or []) if p.magic == MAGIC]
+    if mine:
+        bp = mine[-1]
+        ticket = int(bp.ticket)
+        fill_price = float(bp.price_open)
+    if not fill_price:
+        fill_price = float(setup.entry_price)        # Fallback
+
     pos = LivePosition(
-        prefix=prefix, broker=broker, ticket=int(result.order),
-        direction=setup.direction, entry_price=float(result.price),
+        prefix=prefix, broker=broker, ticket=ticket,
+        direction=setup.direction, entry_price=fill_price,
         initial_sl=float(setup.sl), tp1=float(setup.tp1), tp2=float(setup.tp2),
         lots_initial=float(lots),
         entry_time_utc=datetime.now(timezone.utc).isoformat(),

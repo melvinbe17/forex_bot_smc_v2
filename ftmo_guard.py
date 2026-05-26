@@ -45,6 +45,7 @@ except ImportError:
 
 import config
 import live_feed
+import notify
 
 log = logging.getLogger("ftmo_guard")
 
@@ -185,6 +186,7 @@ def enforce() -> bool:
     if ok:
         return False
     log.critical("FTMO-GUARD HALT: %s -> alle Positionen schliessen!", reason)
+    notify.guard_halt(reason)
     try:
         import executor
         executor.close_all()

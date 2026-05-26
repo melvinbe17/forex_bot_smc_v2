@@ -42,6 +42,7 @@ except ImportError:
     mt5 = None
 
 import live_feed
+import notify
 
 log = logging.getLogger("executor")
 
@@ -267,6 +268,8 @@ def open_from_setup(prefix: str, broker: str, setup, dry: bool = True
     _save_positions(positions)
     log.info("[OPEN] %s %s  ticket=%s  lots=%s  @%.5f  SL=%.5f",
              prefix, setup.direction, pos.ticket, lots, pos.entry_price, pos.initial_sl)
+    notify.trade_opened(prefix, setup.direction, float(lots), pos.entry_price,
+                        pos.initial_sl, pos.tp1, pos.tp2, pos.ticket)
     return pos
 
 
@@ -297,6 +300,8 @@ def _send_close(broker: str, ticket: int, direction: str,
     ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
     log.info("[%s] %s vol=%s -> %s", reason, broker, vol,
              "OK" if ok else f"FAIL {getattr(res,'comment',mt5.last_error())}")
+    if ok:
+        notify.trade_closed(broker, reason, f"vol={vol}")
     return ok
 
 
@@ -339,6 +344,7 @@ def manage_open_positions() -> None:
         if not broker_pos:
             log.info("[CLOSED] %s ticket=%s nicht mehr offen (SL/BE/manuell) -> ausgebucht",
                      prefix, pos.ticket)
+            notify.trade_closed(prefix, "SL/BE/manuell", f"ticket {pos.ticket}")
             del positions[prefix]
             changed = True
             continue

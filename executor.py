@@ -77,11 +77,17 @@ def _step_decimals(step: float) -> int:
 
 
 def _filling_mode(info) -> int:
-    """Waehlt den vom Symbol erlaubten Filling-Modus (FOK > IOC > RETURN)."""
+    """Waehlt den vom Symbol erlaubten Filling-Modus (FOK > IOC > RETURN).
+
+    Das MetaTrader5-Paket exportiert die SYMBOL_FILLING_*-Flags NICHT als
+    Konstanten, darum die Rohwerte der Bitmaske in symbol_info.filling_mode:
+      SYMBOL_FILLING_FOK = 1, SYMBOL_FILLING_IOC = 2
+    Rueckgabe sind die ORDER_FILLING_*-Konstanten (die existieren).
+    """
     fm = getattr(info, "filling_mode", 0)
-    if fm & mt5.SYMBOL_FILLING_FOK:
+    if fm & 1:        # FOK erlaubt
         return mt5.ORDER_FILLING_FOK
-    if fm & mt5.SYMBOL_FILLING_IOC:
+    if fm & 2:        # IOC erlaubt
         return mt5.ORDER_FILLING_IOC
     return mt5.ORDER_FILLING_RETURN
 

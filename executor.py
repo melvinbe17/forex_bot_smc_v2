@@ -254,28 +254,35 @@ def open_from_setup(prefix: str, broker: str, setup, dry: bool = True
 # ---------------------------------------------------------------------------
 # Teilschliessung / SL-Modify / Management
 # ---------------------------------------------------------------------------
-def _close_partial(pos: LivePosition, volume: float, reason: str) -> bool:
-    info = mt5.symbol_info(pos.broker)
-    tick = mt5.symbol_info_tick(pos.broker)
-    if pos.direction == "long":
+def _send_close(broker: str, ticket: int, direction: str,
+                volume: float, reason: str) -> bool:
+    """Schliesst (teilweise) eine Position per Gegen-Deal auf die ticket-ID."""
+    info = mt5.symbol_info(broker)
+    tick = mt5.symbol_info_tick(broker)
+    if direction == "long":
         order_type, price = mt5.ORDER_TYPE_SELL, tick.bid
     else:
         order_type, price = mt5.ORDER_TYPE_BUY, tick.ask
     vol = round(volume, _step_decimals(info.volume_step or 0.01))
     if vol < (info.volume_min or 0.01):
+        log.warning("[%s] %s close-vol %s < min -> skip", reason, broker, vol)
         return False
     request = {
-        "action": mt5.TRADE_ACTION_DEAL, "symbol": pos.broker,
-        "volume": float(vol), "type": order_type, "position": pos.ticket,
+        "action": mt5.TRADE_ACTION_DEAL, "symbol": broker,
+        "volume": float(vol), "type": order_type, "position": int(ticket),
         "price": float(price), "deviation": DEVIATION, "magic": MAGIC,
         "comment": f"smc {reason}", "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _filling_mode(info),
     }
     res = mt5.order_send(request)
     ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
-    log.info("[%s] %s vol=%s -> %s", reason, pos.prefix, vol,
+    log.info("[%s] %s vol=%s -> %s", reason, broker, vol,
              "OK" if ok else f"FAIL {getattr(res,'comment',mt5.last_error())}")
     return ok
+
+
+def _close_partial(pos: LivePosition, volume: float, reason: str) -> bool:
+    return _send_close(pos.broker, pos.ticket, pos.direction, volume, reason)
 
 
 def _modify_sl(pos: LivePosition, new_sl: float) -> bool:
@@ -352,34 +359,95 @@ def manage_open_positions() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Standalone: NUR Lot-Sizing-Dry-Check (kein Trade)
+# Status / Close-All / kontrollierter Test-Trade
 # ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s | %(message)s")
+def status() -> None:
+    """Zeigt von uns getrackte Positionen + alle Broker-Positionen mit unserem MAGIC."""
     _ensure()
+    tracked = _load_positions()
+    print("=== Getrackte Positionen (live_positions.json) ===")
+    if not tracked:
+        print("  (keine)")
+    for k, p in tracked.items():
+        print(f"  {k}: ticket={p.ticket} {p.direction} lots={p.lots_initial} "
+              f"entry={p.entry_price} SL={p.initial_sl} tp1_done={p.tp1_done} tp2_done={p.tp2_done}")
+    print("=== Broker-Positionen mit MAGIC", MAGIC, "===")
+    allp = mt5.positions_get() or []
+    ours = [p for p in allp if p.magic == MAGIC]
+    if not ours:
+        print("  (keine)")
+    for p in ours:
+        side = "long" if p.type == mt5.POSITION_TYPE_BUY else "short"
+        print(f"  {p.symbol}: ticket={p.ticket} {side} vol={p.volume} "
+              f"open={p.price_open} SL={p.sl} profit={p.profit}")
+
+
+def close_all() -> None:
+    """Schliesst ALLE Positionen mit unserem MAGIC und leert die Registry."""
+    _ensure()
+    allp = mt5.positions_get() or []
+    ours = [p for p in allp if p.magic == MAGIC]
+    if not ours:
+        print("Keine offenen Positionen mit unserem MAGIC.")
+    for p in ours:
+        side = "long" if p.type == mt5.POSITION_TYPE_BUY else "short"
+        _send_close(p.symbol, p.ticket, side, p.volume, "CLOSE-ALL")
+    _save_positions({})
+    print("Registry geleert.")
+
+
+def test_trade(prefix: str, direction: str = "long") -> None:
+    """Oeffnet EINEN kontrollierten Test-Trade (echte Order!) auf dem Demo-Konto.
+    Entry = aktueller Kurs, SL = Beispiel-Distanz, TP1/TP2 = 2R/4R."""
+    from smc_strategy import Setup
+    _ensure()
+    broker = live_feed.resolve_symbol(prefix)
+    if broker is None:
+        print(f"Symbol {prefix} nicht gefunden.")
+        return
+    mt5.symbol_select(broker, True)
+    tick = mt5.symbol_info_tick(broker)
+    dist = _SAMPLE_SL_DIST.get(prefix, (tick.ask or tick.bid) * 0.002)
+    if direction == "long":
+        entry = tick.ask
+        sl = entry - dist
+        tp1, tp2 = entry + 2 * dist, entry + 4 * dist
+    else:
+        entry = tick.bid
+        sl = entry + dist
+        tp1, tp2 = entry - 2 * dist, entry - 4 * dist
+    setup = Setup(direction=direction, entry_idx=0,
+                  entry_time=datetime.now(timezone.utc),
+                  entry_price=entry, sl=sl, tp1=tp1, tp2=tp2,
+                  zone_kind="TEST", zone_idx=0, zone_low=sl, zone_high=entry,
+                  htf_bias="up" if direction == "long" else "down",
+                  reason="MANUAL TEST-TRADE")
+    print(f"TEST-TRADE {prefix} {direction}: entry={entry} SL={sl} TP1={tp1} TP2={tp2}")
+    pos = open_from_setup(prefix, broker, setup, dry=False)
+    if pos:
+        print(f"OK -> ticket={pos.ticket} lots={pos.lots_initial}. "
+              f"Pruefe es in MT5; schliessen mit:  python executor.py --close-all")
+
+
+def _dry_lot_check() -> None:
     acc = mt5.account_info()
     risk_amount = acc.balance * LIVE_RISK_PCT
-
     print("=" * 72)
     print(f"  LOT-SIZING DRY-CHECK  (kein Trade)")
     print(f"  Balance ${acc.balance:.2f}  |  Risk {LIVE_RISK_PCT*100:.2f}% = ${risk_amount:.2f}/Trade")
     print("=" * 72)
-
-    mapping = live_feed.resolve_all()
-    for prefix, broker in mapping.items():
+    for prefix, broker in live_feed.resolve_all().items():
         mt5.symbol_select(broker, True)
         tick = mt5.symbol_info_tick(broker)
         entry = tick.bid if tick and tick.bid else tick.ask
         sl_dist = _SAMPLE_SL_DIST.get(prefix, entry * 0.002)
-        sl = entry - sl_dist                       # Beispiel: Long
         try:
-            lots, diag = compute_lots(broker, entry, sl, risk_amount)
+            lots, diag = compute_lots(broker, entry, entry - sl_dist, risk_amount)
         except Exception as e:                     # noqa: BLE001
             print(f"\n[{prefix}] FEHLER: {e}")
             continue
         print(f"\n[{prefix}]  ({broker})")
-        print(f"  Beispiel-Entry={entry:.5f}  SL={sl:.5f}  (SL-Distanz {sl_dist})")
+        print(f"  Beispiel-Entry={entry:.5f}  SL={entry - sl_dist:.5f}  (SL-Distanz {sl_dist})")
         print(f"  tick_size={diag['tick_size']}  tick_value=${diag['tick_value']}  "
               f"vol_min={diag['volume_min']}  vol_step={diag['volume_step']}")
         print(f"  -> Lots: {diag['lots']}  (roh {diag['raw_lots']:.4f})")
@@ -387,6 +455,35 @@ if __name__ == "__main__":
               f"({diag['actual_risk']/acc.balance*100:.2f}% der Balance)")
         if diag["warn"]:
             print(f"  WARN: {diag['warn']}")
+    print("\nFertig - keine Order geschickt.")
+
+
+if __name__ == "__main__":
+    import argparse
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s | %(message)s")
+    ap = argparse.ArgumentParser(description="SMC Executor (Phase 6 / M3)")
+    ap.add_argument("--status", action="store_true", help="Offene Positionen zeigen")
+    ap.add_argument("--manage", action="store_true", help="Einen Management-Zyklus laufen")
+    ap.add_argument("--test-trade", metavar="SYMBOL",
+                    help="EINEN echten Test-Trade oeffnen (Demo!), z.B. --test-trade EURUSD")
+    ap.add_argument("--direction", default="long", choices=["long", "short"],
+                    help="Richtung fuer --test-trade (Default long)")
+    ap.add_argument("--close-all", action="store_true",
+                    help="ALLE Positionen mit unserem MAGIC schliessen")
+    args = ap.parse_args()
+
+    _ensure()
+    if args.status:
+        status()
+    elif args.manage:
+        manage_open_positions()
+        print("Management-Zyklus fertig.")
+    elif args.close_all:
+        close_all()
+    elif args.test_trade:
+        test_trade(args.test_trade.upper(), args.direction)
+    else:
+        _dry_lot_check()        # Default: nur Lot-Sizing, kein Trade
 
     mt5.shutdown()
-    print("\nFertig - keine Order geschickt.")

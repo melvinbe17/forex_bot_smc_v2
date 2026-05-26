@@ -59,6 +59,7 @@ def _write_heartbeat(n_new: int, live: bool) -> None:
     Prozess (der die MT5-Verbindung hat); daily_summary/watchdog lesen nur
     die Datei, ohne eigene MT5-Verbindung. Fehler werden geloggt, nie geworfen."""
     try:
+        live_feed.ensure_initialized()      # MT5 sicher verbunden (auch beim Start-Heartbeat)
         acc = live_feed.mt5.account_info()
         snap = ftmo_guard.snapshot()
         allp = live_feed.mt5.positions_get() or []

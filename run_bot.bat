@@ -3,7 +3,7 @@ REM ==========================================================
 REM run_bot.bat - startet den Live-Runner und startet ihn bei
 REM Absturz automatisch neu. Fenster schliessen = stoppen.
 REM ==========================================================
-cd /d "%USERPROFILE%\Desktop\forex_bot_smc"
+cd /d "%~dp0"
 :loop
 echo ==========================================================
 echo [%date% %time%] Starte live_runner --live ...

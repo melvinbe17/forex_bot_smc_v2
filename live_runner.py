@@ -309,12 +309,27 @@ def main() -> int:
                          "Aktiviert Executor + FTMO-Guard + Positions-Management.")
     ap.add_argument("--buffer", type=int, default=10,
                     help="Sekunden Puffer nach M15-Close (Default 10).")
+    ap.add_argument("--no-regime-overlay", action="store_true",
+                    help="Regime-Overlay (Strategie 2) deaktivieren. Default: AN.")
     args = ap.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s | %(message)s",
     )
+
+    # Regime-Overlay (Strategie 2): standardmaessig AN fuer diesen Runner.
+    # Greift automatisch in find_all_setups (config-gesteuert). Braucht
+    # aktuelle Makrodaten in data/macro/ -> via macro_refresh.py taeglich
+    # auf dem VPS aktualisieren.
+    config.REGIME_OVERLAY_ENABLED = not args.no_regime_overlay
+    if config.REGIME_OVERLAY_ENABLED:
+        log.warning("REGIME-OVERLAY AKTIV | gate_symbols=%s sides=%s | "
+                    "Makrodaten frisch halten (macro_refresh.py)!",
+                    getattr(config, "REGIME_GATE_SYMBOLS", []),
+                    getattr(config, "REGIME_GATE_SIDES", None))
+    else:
+        log.warning("Regime-Overlay AUS (--no-regime-overlay).")
 
     prefixes = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     live = args.live

@@ -325,7 +325,7 @@ if __name__ == "__main__":
     ap.add_argument("--tf", default="M15")
     ap.add_argument("--htf", default="H1")
     ap.add_argument("--source", default="csv",
-                    choices=["auto", "csv", "yfinance"])
+                    choices=["auto", "csv", "yfinance", "parquet"])
     ap.add_argument("--limit", type=int, default=5000,
                     help="Letzte N LTF-Bars (Default 5000). 0 = kompletter "
                          "Datensatz ohne Abschneiden.")
@@ -343,7 +343,16 @@ if __name__ == "__main__":
                     help="Disable SESSION_FILTER fuer diesen Run.")
     ap.add_argument("--no-ct-adx", action="store_true",
                     help="Disable CT_ADX_FILTER fuer diesen Run.")
+    ap.add_argument("--regime-overlay", action="store_true",
+                    help="Enable REGIME_OVERLAY (Strategie 2) fuer diesen Run.")
     args = ap.parse_args()
+
+    if args.regime_overlay:
+        import config as _cfg_reg
+        _cfg_reg.REGIME_OVERLAY_ENABLED = True
+        print(f"[REGIME-OVERLAY] aktiviert: gate_symbols="
+              f"{getattr(_cfg_reg, 'REGIME_GATE_SYMBOLS', [])}, "
+              f"sides={getattr(_cfg_reg, 'REGIME_GATE_SIDES', None)}")
 
     # Direction-Override: patche config-Modul VOR Strategy-Aufrufen.
     # smc_strategy.py liest _cfg.TRADE_LONGS/_SHORTS zur Laufzeit.

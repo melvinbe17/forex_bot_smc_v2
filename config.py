@@ -253,6 +253,20 @@ CT_ADX_H4_SLOPE_LB    = 3
 CT_ADX_FILTER_EXCLUDE_SYMBOLS = ["USDJPY"]
 
 # ----------------------------------------------------------------------
+# REGIME-OVERLAY  (Strategie 2 — Makro/Intermarket)
+# ----------------------------------------------------------------------
+# Setzt makro-getriebene Setups im Risk-Off-Regime aus (USDJPY beide Seiten).
+# Signal in regime_overlay.py: Carry (US-JP-Renditedifferenz faellt) ODER
+# VIX-Spike, durch Intermarket-Proxy (Yen+Gold bid) bestaetigt; bei fehlenden
+# Makrodaten (data/macro/) Fallback auf den reinen Preis-Proxy.
+# Validierung 14J (eval_overlay.py): MaxDD -21.7%->-15.6%, Return +90pp,
+# OOS-robust, FTMO sauber.  Default AUS = v0.6-Paritaet; per --regime-overlay
+# oder hier aktivieren.
+REGIME_OVERLAY_ENABLED = False
+REGIME_GATE_SYMBOLS    = ["USDJPY"]   # nur diese Symbole gaten
+REGIME_GATE_SIDES      = None         # None = beide Seiten; oder ["long"]
+
+# ----------------------------------------------------------------------
 # INSTRUMENTS
 # ----------------------------------------------------------------------
 # Fuer SMC auf M15 eignen sich: grosse Indizes (US500/US30/GER40),

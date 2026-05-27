@@ -464,6 +464,28 @@ def find_all_setups(
         )
     ct_adx_blocked = 0
 
+    # ---------------------------------------------------------------
+    # Regime-Overlay (Strategie 2): makro-getriebene Setups im Risk-Off-
+    # Regime aussetzen (Default: USDJPY beide Seiten). Symbol-agnostisches
+    # Tages-Signal aus regime_overlay.build_regime() (Carry/VIX + Proxy).
+    # Fail-open: bei Fehler/fehlenden Daten wird nicht gegatet.
+    # ---------------------------------------------------------------
+    regime_ro = None          # daily bool Series (risk_off_lag), index normalisiert
+    regime_sides = None
+    if (_cfg is not None
+            and getattr(_cfg, "REGIME_OVERLAY_ENABLED", False)
+            and symbol in getattr(_cfg, "REGIME_GATE_SYMBOLS", [])):
+        try:
+            import regime_overlay as _ro
+            _reg = _ro.build_regime()
+            regime_ro = _reg["risk_off_lag"].copy()
+            regime_ro.index = regime_ro.index.normalize()
+            regime_sides = getattr(_cfg, "REGIME_GATE_SIDES", None)
+        except Exception as e:
+            print(f"[REGIME] WARN: Regime nicht ladbar ({e}) -> kein Gate")
+            regime_ro = None
+    regime_blocked = 0
+
     for i in range(len(ltf_df)):
         if vola_skip is not None and vola_skip[i]:
             continue
@@ -491,10 +513,19 @@ def find_all_setups(
             ):
                 ct_adx_blocked += 1
                 continue
+        # Regime-Overlay-Gate: Risk-Off -> Setup aussetzen
+        if regime_ro is not None:
+            d = s.entry_time.normalize()
+            if bool(regime_ro.get(d, False)) and (
+                    regime_sides is None or s.direction in regime_sides):
+                regime_blocked += 1
+                continue
         setups.append(s)
 
     if ct_adx_h4 is not None:
         print(f"[CT_ADX] blocked={ct_adx_blocked}  kept={len(setups)}")
+    if regime_ro is not None:
+        print(f"[REGIME] risk-off blocked={regime_blocked}  kept={len(setups)}")
     return setups
 
 

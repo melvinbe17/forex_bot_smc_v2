@@ -236,6 +236,32 @@ def resample(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
 # ----------------------------------------------------------------------
 # High-Level: Laedt pro Symbol ein dict mit allen gebrauchten TFs
 # ----------------------------------------------------------------------
+def load_parquet(symbol: str, timeframe: str,
+                 data_dir=None):
+    if data_dir is None:
+        data_dir = "data/dukascopy"
+    path = Path(data_dir) / f"{symbol}_{timeframe}_15y.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"Parquet nicht gefunden: {path}")
+    df = pd.read_parquet(path)
+    df.columns = [c.strip().lower() for c in df.columns]
+    if not isinstance(df.index, pd.DatetimeIndex):
+        for col in ("datetime", "timestamp", "time", "date"):
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], utc=True).dt.tz_convert(None)
+                df = df.set_index(col)
+                break
+    if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+        df.index = df.index.tz_convert(None)
+    df = df.sort_index()
+    title_map = {"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}
+    df = df.rename(columns=title_map)
+    keep = [c for c in ("Open","High","Low","Close","Volume") if c in df.columns]
+    df = df[keep]
+    df = df[~df.index.duplicated(keep="first")]
+    return df
+
+
 def load_symbol(symbol: str,
                 timeframes: Optional[list[str]] = None,
                 source: Optional[str] = None) -> Dict[str, pd.DataFrame]:
@@ -253,7 +279,9 @@ def load_symbol(symbol: str,
         df = None
         last_err: Optional[Exception] = None
 
-        if source in ("csv", "auto"):
+        if source == "parquet":
+            df = load_parquet(symbol, tf)
+        if df is None and source in ("csv", "auto"):
             try:
                 df = load_csv(symbol, tf)
             except FileNotFoundError as e:
@@ -308,7 +336,7 @@ if __name__ == "__main__":
     ap.add_argument("--symbol", default="EURUSD")
     ap.add_argument("--tf", default="M15")
     ap.add_argument("--source", default="auto",
-                    choices=["auto", "csv", "yfinance"])
+                    choices=["auto", "csv", "parquet", "yfinance"])
     args = ap.parse_args()
 
     df = load_symbol(args.symbol, timeframes=[args.tf], source=args.source)[args.tf]

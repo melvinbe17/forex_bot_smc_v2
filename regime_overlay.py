@@ -51,10 +51,18 @@ _JP10Y_ALIASES = ["JPY10Y", "IRLTLT01JPM156N"]
 # Daten laden
 # --------------------------------------------------------------------------
 def daily_close(sym: str) -> pd.Series:
-    """Tages-Close (nur Handelstage) aus dem 14J-Parquet, optional erweitert
-    um aktuelle Werte aus RECENT_PX (Live-Frische-Cache)."""
-    df = pd.read_parquet(PARQUET.format(sym=sym))
-    s = df["Close"].resample("1D").last().dropna()
+    """Tages-Close (nur Handelstage). Quelle: 14J-Parquet falls vorhanden,
+    sonst allein der Live-Frische-Cache RECENT_PX (vom VPS aus MT5 befuellt).
+    Ist Parquet da, wird der Cache angehaengt -> aktuelle Werte ueberschreiben."""
+    pq = PARQUET.format(sym=sym)
+    if os.path.exists(pq):
+        try:
+            df = pd.read_parquet(pq)
+            s = df["Close"].resample("1D").last().dropna()
+        except Exception:
+            s = pd.Series(dtype="float64")
+    else:
+        s = pd.Series(dtype="float64")   # kein Parquet (z.B. Live-VPS) -> nur Cache
     if os.path.exists(RECENT_PX):
         try:
             rc = pd.read_csv(RECENT_PX)

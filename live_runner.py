@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, List, Optional, Tuple
@@ -52,6 +53,49 @@ import ftmo_guard
 import heartbeat
 
 log = logging.getLogger("live_runner")
+
+# ---------------------------------------------------------------------------
+# Regime-Px-Cache aktuell halten OHNE zweite MT5-Verbindung (MT5 erlaubt nur
+# eine). Der Runner haengt 1x/Tag die aktuellen Tages-Closes (USDJPY/XAUUSD)
+# an den vom macro_refresh angelegten Basis-Cache an. So kennt
+# regime_overlay.build_regime auch an Folgetagen das aktuelle Datum.
+# ---------------------------------------------------------------------------
+PX_CACHE = os.path.join("data", "macro", "_daily_px.csv")
+PX_CACHE_SYMBOLS = ["USDJPY", "XAUUSD"]
+_last_px_refresh = None
+
+
+def update_px_cache(prefixes: List[str], n_bars: int = 60 * 96) -> None:
+    """Merged aktuelle Tages-Closes in data/macro/_daily_px.csv.
+    Nutzt die bestehende MT5-Verbindung des Runners (kein zweiter Connect)."""
+    import pandas as pd
+    syms = [p for p in prefixes if p in PX_CACHE_SYMBOLS] or PX_CACHE_SYMBOLS
+    series = {}
+    for pre in syms:
+        try:
+            _, ltf, _ = live_feed.get_strategy_frames(pre, n_bars=n_bars)
+            s = ltf["Close"].resample("1D").last().dropna()
+            s.index = pd.to_datetime(s.index).normalize()
+            series[pre] = s
+        except Exception as e:                       # noqa: BLE001
+            log.error("PX-Cache %s fehlgeschlagen: %s", pre, e)
+    if not series:
+        return
+    new = pd.DataFrame(series)
+    if os.path.exists(PX_CACHE):
+        try:
+            old = pd.read_csv(PX_CACHE, index_col=0)
+            old.index = pd.to_datetime(old.index, errors="coerce").normalize()
+            old = old[~old.index.isna()]
+            new = new.combine_first(old)             # neu gewinnt, alt fuellt Historie
+        except Exception:                            # noqa: BLE001
+            pass
+    new = new.sort_index()
+    new.index.name = "date"
+    os.makedirs(os.path.dirname(PX_CACHE), exist_ok=True)
+    new.to_csv(PX_CACHE)
+    log.info("PX-Cache aktualisiert: %d Tage (bis %s)",
+             len(new), new.index.max().date())
 
 
 def _write_heartbeat(n_new: int, live: bool) -> None:
@@ -209,6 +253,16 @@ def run_cycle(
     """Ein Zyklus. dry (live=False): nur Signale loggen. live=True: zusaetzlich
     offene Positionen managen, FTMO-Guard durchsetzen und Entries ausfuehren.
     Gibt Anzahl neuer Signale zurueck."""
+
+    # Regime-Px-Cache 1x pro Tag auffrischen (nutzt die MT5-Verbindung des Runners)
+    global _last_px_refresh
+    today = datetime.now(timezone.utc).date()
+    if _last_px_refresh != today:
+        try:
+            update_px_cache(prefixes)
+            _last_px_refresh = today
+        except Exception as e:                       # noqa: BLE001
+            log.error("PX-Cache-Refresh fehlgeschlagen: %s", e)
 
     halted = False
     if live:
